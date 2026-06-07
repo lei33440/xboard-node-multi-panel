@@ -165,28 +165,30 @@ log_info "Config created: ${CONFIG_DIR}/config.yml"
 
 # Create OpenRC service script
 log_step "Creating OpenRC service script..."
-cat > "/etc/init.d/${SERVICE_NAME}" <<SVCEOF
+cat > "/etc/init.d/${SERVICE_NAME}" <<'SVCEOF'
 #!/sbin/openrc-run
 
-description="Xboard Node - ${INSTANCE_NAME}"
+description="Xboard Node - INSTANCE_NAME"
 command="/usr/local/bin/xboard-node"
-command_args="-c ${CONFIG_DIR}/config.yml"
+command_args="-c CONFIG_DIR/config.yml"
 command_background=true
-pidfile="${PID_FILE}"
-output_log="${LOG_PATH}"
-error_log="${LOG_PATH}.err"
+pidfile="/run/xboard-node-INSTANCE_NAME.pid"
+output_log="/var/log/xboard-node-INSTANCE_NAME.log"
+error_log="/var/log/xboard-node-INSTANCE_NAME.log"
 
 depend() {
     need net
-    after firewall
 }
 
 start_pre() {
-    mkdir -p /var/log
-    touch "$output_log"
-    touch "$error_log"
+    checkpath --directory --mode 0755 --owner root:root /var/log
+    checkpath --file --mode 0644 --owner root:root /var/log/xboard-node-INSTANCE_NAME.log
 }
 SVCEOF
+
+# Replace placeholders with actual values
+sed -i "s/INSTANCE_NAME/${INSTANCE_NAME}/g" "/etc/init.d/${SERVICE_NAME}"
+sed -i "s|CONFIG_DIR|${CONFIG_DIR}|g" "/etc/init.d/${SERVICE_NAME}"
 chmod +x "/etc/init.d/${SERVICE_NAME}"
 log_info "Service created: /etc/init.d/${SERVICE_NAME}"
 
