@@ -12,7 +12,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -40,7 +40,7 @@ while [ $# -gt 0 ]; do
         --machine-id) MACHINE_ID="$2"; shift 2;;
         --version) INSTALL_VERSION="$2"; shift 2;;
         --help) cat <<'HELP'
-Xboard-Node Multi-Panel Installer v1.0.0
+Xboard-Node Multi-Panel Installer v1.0.1
 
 Usage:
   curl -fsSL URL | sh -s -- --name INSTANCE --panel URL --token TOKEN --machine-id ID
@@ -80,12 +80,11 @@ case "$INSTANCE_NAME" in
     *[^a-zA-Z0-9-]*) log_error "Instance name must contain only letters, numbers, and hyphens" && exit 1 ;;
 esac
 
-# Service name
+# Paths
 SERVICE_NAME="xboard-node-${INSTANCE_NAME}"
 CONFIG_DIR="/etc/xboard-node-${INSTANCE_NAME}"
 BINARY_PATH="/usr/local/bin/xboard-node"
 LOG_PATH="/var/log/xboard-node-${INSTANCE_NAME}.log"
-PID_FILE="/run/xboard-node-${INSTANCE_NAME}.pid"
 
 # Banner
 echo ""
@@ -101,12 +100,10 @@ echo ""
 # Check if instance already exists
 if [ -d "$CONFIG_DIR" ]; then
     log_warn "Instance '${INSTANCE_NAME}' already exists!"
-    log_warn "Config directory: ${CONFIG_DIR}"
-    echo ""
     printf "Do you want to overwrite it? (y/N): "
     read -r confirm
     case "$confirm" in
-        y|Y) log_info "Overwriting existing instance..." ;;
+        y|Y) log_info "Overwriting..." ;;
         *) log_info "Aborted." && exit 0 ;;
     esac
 fi
@@ -125,11 +122,10 @@ log_step "Installing dependencies..."
 apk add --no-cache curl ca-certificates openrc >/dev/null 2>&1
 
 # Create directories
-log_step "Creating directories..."
 mkdir -p "$CONFIG_DIR"
 mkdir -p /var/log
 
-# Download binary (if not exists or forced update)
+# Download binary
 if [ ! -f "$BINARY_PATH" ]; then
     log_step "Downloading xboard-node..."
     BASE="https://github.com/cedar2025/xboard-node/releases"
@@ -138,15 +134,14 @@ if [ ! -f "$BINARY_PATH" ]; then
     else
         DOWNLOAD_URL="$BASE/download/$INSTALL_VERSION/xboard-node-linux-$ARCH_NAME"
     fi
-
     curl -fsSL -o "$BINARY_PATH" "$DOWNLOAD_URL" || {
         log_error "Failed to download xboard-node"
         exit 1
     }
     chmod +x "$BINARY_PATH"
-    log_info "Binary downloaded successfully"
+    log_info "Binary downloaded"
 else
-    log_info "Binary already exists, skipping download"
+    log_info "Binary exists, skipping"
 fi
 
 # Create config
@@ -161,78 +156,64 @@ instances:
         machine_id: ${MACHINE_ID}
         token: ${TOKEN}
 EOF
-log_info "Config created: ${CONFIG_DIR}/config.yml"
+log_info "Config: ${CONFIG_DIR}/config.yml"
 
-# Create OpenRC service script
-log_step "Creating OpenRC service script..."
-cat > "/etc/init.d/${SERVICE_NAME}" <<'SVCEOF'
-#!/sbin/openrc-run
+# Create unified startup script if first instance
+if [ ! -f /etc/local/start-xboard-all ]; then
+    log_step "Creating startup manager..."
+    cat > /etc/local/start-xboard-all <<'STRTALL'
+#!/bin/sh
+# Start all xboard-node instances
+sleep 2
+for config in /etc/xboard-node-*/config.yml; do
+    instance=$(basename $(dirname $config))
+    logfile="/var/log/${instance}.log"
+    mkdir -p /var/log
+    /usr/local/bin/xboard-node -c "$config" >> "$logfile" 2>&1 &
+done
+exit 0
+STRTALL
+    chmod +x /etc/local/start-xboard-all
+    log_info "Startup manager created"
+fi
 
-description="Xboard Node - INSTANCE_NAME"
-command="/usr/local/bin/xboard-node"
-command_args="-c CONFIG_DIR/config.yml"
-command_background=true
-pidfile="/run/xboard-node-INSTANCE_NAME.pid"
-output_log="/var/log/xboard-node-INSTANCE_NAME.log"
-error_log="/var/log/xboard-node-INSTANCE_NAME.log"
+# Stop all instances
+log_step "Stopping existing instances..."
+pkill -9 xboard-node 2>/dev/null || true
+rm -f /run/xboard-node-*.pid
 
-depend() {
-    need net
-}
-
-start_pre() {
-    checkpath --directory --mode 0755 --owner root:root /var/log
-    checkpath --file --mode 0644 --owner root:root /var/log/xboard-node-INSTANCE_NAME.log
-}
-SVCEOF
-
-# Replace placeholders with actual values
-sed -i "s/INSTANCE_NAME/${INSTANCE_NAME}/g" "/etc/init.d/${SERVICE_NAME}"
-sed -i "s|CONFIG_DIR|${CONFIG_DIR}|g" "/etc/init.d/${SERVICE_NAME}"
-chmod +x "/etc/init.d/${SERVICE_NAME}"
-log_info "Service created: /etc/init.d/${SERVICE_NAME}"
-
-# Stop existing service if running
-log_step "Stopping existing service..."
-rc-service "$SERVICE_NAME" stop 2>/dev/null
-killall -n xboard-node 2>/dev/null || true
-rm -f "$PID_FILE"
-
-# Start service
+# Start this instance
 log_step "Starting xboard-node..."
-rc-service "$SERVICE_NAME" start
+/usr/local/bin/xboard-node -c "$CONFIG_DIR/config.yml" >> "$LOG_PATH" 2>&1 &
 
-# Wait for startup
 sleep 3
 
 # Check status
-if pgrep -x xboard-node >/dev/null; then
+if pgrep -f "xboard-node.*${CONFIG_DIR}" >/dev/null; then
     echo ""
     echo "=============================================="
-    log_info "Instance '${INSTANCE_NAME}' installed successfully!"
+    log_info "Instance '${INSTANCE_NAME}' installed!"
     echo "=============================================="
     echo ""
-    log_info "Service: ${SERVICE_NAME}"
     log_info "Config: ${CONFIG_DIR}/config.yml"
     log_info "Log: ${LOG_PATH}"
+    log_info "Panel: ${PANEL_URL}"
     echo ""
-    log_info "Commands:"
-    log_info "  Status:  rc-service ${SERVICE_NAME} status"
-    log_info "  Restart: rc-service ${SERVICE_NAME} restart"
-    log_info "  Logs:    tail -f ${LOG_PATH}"
+    log_info "View logs: tail -f ${LOG_PATH}"
     echo ""
 
-    # Enable on boot
-    rc-update add "$SERVICE_NAME" default 2>/dev/null
-    log_info "Autostart enabled"
+    # Set up autostart (using unified startup script)
+    if ! grep -q "start-xboard-all" /etc/local.d/xboard-node.start 2>/dev/null; then
+        cat > /etc/local.d/xboard-node.start <<'AUTOSTART'
+#!/bin/sh
+/etc/local/start-xboard-all
+AUTOSTART
+        chmod +x /etc/local.d/xboard-node.start
+        log_info "Autostart configured"
+    fi
 else
     echo ""
-    echo "=============================================="
     log_error "Service failed to start"
-    echo "=============================================="
-    echo ""
-    log_error "Please check logs:"
-    log_error "  tail -30 ${LOG_PATH}"
-    echo ""
+    log_error "Check logs: tail -30 ${LOG_PATH}"
     exit 1
 fi
